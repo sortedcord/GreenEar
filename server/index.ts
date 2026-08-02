@@ -13,9 +13,15 @@ import { z } from 'zod'
 
 const require = createRequire(import.meta.url)
 const ffmpegPath = require('ffmpeg-static') as string | null
-const PORT = Number(process.env.PORT ?? 3001)
-const MAX_UPLOAD_MB = Number(process.env.MAX_UPLOAD_MB ?? 500)
-const TTL_MS = Number(process.env.SESSION_TTL_HOURS ?? 24) * 60 * 60 * 1000
+function positiveNumber(value: string | undefined, fallback: number, name: string) {
+  const parsed = Number(value ?? fallback)
+  if (!Number.isFinite(parsed) || parsed <= 0) throw new Error(`${name} must be a positive number`)
+  return parsed
+}
+
+const PORT = positiveNumber(process.env.PORT, 3001, 'PORT')
+const MAX_UPLOAD_MB = positiveNumber(process.env.MAX_UPLOAD_MB, 500, 'MAX_UPLOAD_MB')
+const TTL_MS = positiveNumber(process.env.SESSION_TTL_HOURS, 1, 'SESSION_TTL_HOURS') * 60 * 60 * 1000
 const root = path.resolve(process.cwd(), 'data')
 await fsp.mkdir(root, { recursive: true })
 
@@ -24,6 +30,7 @@ app.disable('x-powered-by')
 app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' } }))
 app.use(cors({ origin: process.env.NODE_ENV === 'production' ? false : /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/ }))
 app.use(express.json({ limit: '50kb' }))
+app.get('/health', (_req, res) => res.status(200).json({ status: 'ok' }))
 app.use('/api', rateLimit({ windowMs: 60_000, limit: 60, standardHeaders: 'draft-8', legacyHeaders: false }))
 
 const upload = multer({
@@ -64,6 +71,15 @@ async function removeSession(id: string) {
   if (!session) return
   sessions.delete(id)
   await fsp.rm(session.dir, { recursive: true, force: true })
+}
+
+async function removeExpiredSessionDirectories() {
+  const entries = await fsp.readdir(root, { withFileTypes: true })
+  await Promise.all(entries.filter(entry => entry.isDirectory()).map(async entry => {
+    const dir = path.join(root, entry.name)
+    const stats = await fsp.stat(dir)
+    if (Date.now() - stats.birthtimeMs >= TTL_MS) await fsp.rm(dir, { recursive: true, force: true })
+  }))
 }
 
 app.post('/api/upload', upload.single('audio'), async (req, res, next) => {
@@ -130,9 +146,11 @@ app.use((error: unknown, _req: express.Request, res: express.Response, _next: ex
   res.status(500).json({ error: error instanceof Error ? error.message : 'Something went wrong.' })
 })
 
+await removeExpiredSessionDirectories()
 setInterval(() => {
-  for (const [id, session] of sessions) if (Date.now() - session.createdAt > TTL_MS) void removeSession(id)
-}, 60 * 60 * 1000).unref()
+  for (const [id, session] of sessions) if (Date.now() - session.createdAt >= TTL_MS) void removeSession(id)
+  void removeExpiredSessionDirectories().catch(error => console.error('Session cleanup failed', error))
+}, 60 * 1000).unref()
 
 if (process.env.NODE_ENV === 'production') {
   const dist = path.resolve(process.cwd(), 'dist')

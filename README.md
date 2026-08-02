@@ -15,7 +15,7 @@ A small, self hosted audio comparison and blind ABX testing app.
 - Transcode to MP3, AAC, and Opus at configurable bitrates
 - Audition the lossless reference and every encoded version
 - Run randomized, 10 trial blind ABX comparisons
-- Automatic server-side session cleanup after 24 hours
+- Automatic server-side session cleanup after 1 hour
 
 ## Development
 
@@ -38,3 +38,19 @@ Open `http://localhost:3001`.
 Environment settings are documented in `.env.example`.
 
 > For public deployment, place the app behind HTTPS and a reverse proxy. Uploaded audio is stored in `data/` for the session lifetime and should be placed on ephemeral/private storage.
+
+### Docker production deployment
+
+The production image is a multi-stage build, runs as the unprivileged `node` user,
+and contains only production dependencies and compiled assets. Session data is held
+in a named Docker volume and is removed no later than one minute after its one-hour
+lifetime (including data left behind by a restarted container).
+
+```bash
+docker compose up --build -d
+```
+
+The Compose configuration exposes the service only on `127.0.0.1:3001`; put an HTTPS
+reverse proxy in front of it for public access. To change the upload limit, edit
+`MAX_UPLOAD_MB` in `docker-compose.yml`. Do not publish the port directly to the
+internet.

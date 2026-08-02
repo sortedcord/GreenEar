@@ -70,7 +70,7 @@ function App() {
     <header className="border-b border-green-200 bg-white">
       <div className="mx-auto flex max-w-5xl items-center justify-between px-5 py-4">
         <div className="flex items-center gap-2 text-green-900"><Leaf className="size-7" aria-hidden /><span className="text-lg font-bold">Green Ear</span></div>
-        <span className="hidden items-center gap-1.5 text-sm text-green-800 sm:flex"><ShieldCheck className="size-4" /> Files deleted after 24 hours</span>
+        <span className="hidden items-center gap-1.5 text-sm text-green-800 sm:flex"><ShieldCheck className="size-4" /> Files deleted after 1 hour</span>
       </div>
     </header>
     <main className="mx-auto max-w-5xl px-5 py-10">
