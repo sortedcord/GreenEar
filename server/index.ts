@@ -146,7 +146,6 @@ app.use((error: unknown, _req: express.Request, res: express.Response, _next: ex
   res.status(500).json({ error: error instanceof Error ? error.message : 'Something went wrong.' })
 })
 
-await removeExpiredSessionDirectories()
 setInterval(() => {
   for (const [id, session] of sessions) if (Date.now() - session.createdAt >= TTL_MS) void removeSession(id)
   void removeExpiredSessionDirectories().catch(error => console.error('Session cleanup failed', error))
@@ -158,4 +157,12 @@ if (process.env.NODE_ENV === 'production') {
   app.get('*splat', (_req, res) => res.sendFile(path.join(dist, 'index.html')))
 }
 
-app.listen(PORT, () => console.log(`Audio AB server listening on http://localhost:${PORT}`))
+const server = app.listen(PORT, '0.0.0.0', () => console.log(`Audio AB server listening on port ${PORT}`))
+
+function shutdown(signal: string) {
+  console.log(`${signal} received; shutting down`)
+  server.close(error => process.exit(error ? 1 : 0))
+  setTimeout(() => process.exit(1), 10_000).unref()
+}
+process.once('SIGTERM', () => shutdown('SIGTERM'))
+process.once('SIGINT', () => shutdown('SIGINT'))

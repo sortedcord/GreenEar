@@ -1,0 +1,22 @@
+services:
+  audio-ab:
+    build:
+      context: .
+    image: audio-ab:latest
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3001:3001"
+    environment:
+      NODE_ENV: production
+      PORT: "3001"
+      MAX_UPLOAD_MB: "500"
+      SESSION_TTL_HOURS: "1"
+    volumes:
+      - audio-ab-data:/app/data
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+volumes:
+  audio-ab-data:

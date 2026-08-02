@@ -1,0 +1,10 @@
+.git
+.github
+node_modules
+dist
+server-dist
+data
+.env
+*.log
+*.tsbuildinfo
+README.md
