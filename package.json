@@ -9,6 +9,7 @@
     "start": "NODE_ENV=production node server-dist/index.js",
     "typecheck": "tsc -b",
     "lint": "eslint .",
+    "screenshots": "playwright test tests/readme-screenshot.spec.ts",
     "build:client": "tsc -b && vite build",
     "build:server": "tsc -p tsconfig.server.json"
   },
@@ -26,6 +27,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^9.17.0",
+    "@playwright/test": "^1.62.1",
     "@tailwindcss/vite": "^4.0.0",
     "@types/cors": "^2.8.17",
     "@types/express": "^5.0.0",

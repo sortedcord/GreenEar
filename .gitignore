@@ -8,3 +8,5 @@ data/*
 *.tsbuildinfo
 data/
 server-dist/
+test-results/
+playwright-report/

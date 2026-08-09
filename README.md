@@ -2,6 +2,8 @@
 
 A small, self hosted audio comparison and blind ABX testing app.
 
+![Green Ear frontend](docs/screenshots/frontend.png)
+
 ## Stack
 
 - React + TypeScript + Vite
@@ -25,6 +27,18 @@ npm run dev
 ```
 
 Open `http://localhost:5173`.
+
+## Updating the README screenshot
+
+The tracked frontend image above is generated from a real Chromium render of the
+local development app. Refresh it after a frontend change with:
+
+```bash
+npm run screenshots
+```
+
+The Playwright check verifies that the README continues to embed the generated
+`docs/screenshots/frontend.png` image before writing it.
 
 ## Production
 
