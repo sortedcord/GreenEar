@@ -52,6 +52,7 @@ const transcodeSchema = z.object({
 })
 
 type Variant = { id: string; codec: string; bitrate: number; url: string; label: string }
+type RequestedVariant = z.infer<typeof transcodeSchema>['variants'][number]
 type Session = { id: string; dir: string; originalName: string; originalPath: string; createdAt: number; variants: Variant[] }
 type TranscodeJob = { sessionId: string; progress: number; status: 'processing' | 'complete' | 'failed'; variants?: Variant[]; error?: string }
 const sessions = new Map<string, Session>()
@@ -152,10 +153,23 @@ app.get('/api/transcode/:jobId', (req, res) => {
   res.json(job)
 })
 
-async function transcode(session: Session, requests: z.infer<typeof transcodeSchema>['variants'], job: TranscodeJob) {
-  const duration = await mediaDuration(session.originalPath)
+function matchingVariant(session: Session, requested: RequestedVariant) {
+  return session.variants.find(variant => variant.codec === requested.codec && variant.bitrate === requested.bitrate)
+}
+
+async function transcode(session: Session, requests: RequestedVariant[], job: TranscodeJob) {
   const variants: Variant[] = []
-  for (const [index, requested] of requests.entries()) {
+  const missing = requests.filter(requested => !matchingVariant(session, requested))
+  const duration = missing.length > 0 ? await mediaDuration(session.originalPath) : 0
+
+  for (const requested of requests) {
+    const existing = matchingVariant(session, requested)
+    if (existing) {
+      variants.push(existing)
+      continue
+    }
+
+    const index = missing.findIndex(item => item === requested)
     const id = crypto.randomUUID()
     const extension = requested.codec === 'aac' ? 'm4a' : requested.codec
     const output = path.join(session.dir, `${id}.${extension}`)
@@ -167,12 +181,14 @@ async function transcode(session: Session, requests: z.infer<typeof transcodeSch
           ? ['-ac', '2', '-c:a', 'libvorbis', '-b:a', `${requested.bitrate}k`]
           : ['-c:a', 'libopus', '-b:a', `${requested.bitrate}k`, '-vbr', 'on']
     await runFfmpeg(['-i', session.originalPath, '-vn', ...codecArgs, output], outTime => {
-      const completed = (index + Math.min(outTime / duration, 1)) / requests.length
+      const completed = (index + Math.min(outTime / duration, 1)) / missing.length
       job.progress = Math.min(99, Math.max(job.progress, Math.floor(completed * 100)))
     })
-    variants.push({ id, codec: requested.codec, bitrate: requested.bitrate, label: requested.label ?? `${requested.codec.toUpperCase()} · ${requested.bitrate} kbps`, url: `/media/${session.id}/${path.basename(output)}` })
+    const variant = { id, codec: requested.codec, bitrate: requested.bitrate, label: requested.label ?? `${requested.codec.toUpperCase()} · ${requested.bitrate} kbps`, url: `/media/${session.id}/${path.basename(output)}` }
+    session.variants.push(variant)
+    variants.push(variant)
   }
-  session.variants.push(...variants)
+
   job.variants = variants
   job.progress = 100
   job.status = 'complete'
