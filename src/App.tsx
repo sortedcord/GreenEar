@@ -5,6 +5,8 @@ type Variant = { id: string; codec: string; bitrate: number; label: string; url:
 type Source = { sessionId: string; name: string; referenceUrl: string }
 type Choice = { codec: 'mp3' | 'aac' | 'opus' | 'ogg'; bitrate: number; label?: string }
 type PresetId = 'youtube' | 'youtubeMusic' | 'spotify'
+type Progress = { kind: 'upload' | 'transcode'; value: number; fileName?: string }
+type TranscodeJob = { progress: number; status: 'processing' | 'complete' | 'failed'; variants?: Variant[]; error?: string }
 
 const codecs: Choice['codec'][] = ['mp3', 'aac', 'opus', 'ogg']
 const bitrates = [64, 96, 128, 160, 192, 256, 320]
@@ -26,7 +28,7 @@ function App() {
   const [customEnabled, setCustomEnabled] = useState(false)
   const [customChoices, setCustomChoices] = useState<Choice[]>([{ codec: 'mp3', bitrate: 192 }])
   const [variants, setVariants] = useState<Variant[]>([])
-  const [busy, setBusy] = useState(false)
+  const [progress, setProgress] = useState<Progress | null>(null)
   const [error, setError] = useState('')
   const [testPair, setTestPair] = useState<[string, string] | null>(null)
 
@@ -34,15 +36,28 @@ function App() {
 
   async function uploadFile(file?: File) {
     if (!file) return
-    setBusy(true); setError(''); setVariants([]); setTestPair(null)
+    setError(''); setVariants([]); setTestPair(null); setProgress({ kind: 'upload', value: 0, fileName: file.name })
     const form = new FormData(); form.append('audio', file)
     try {
-      const response = await fetch('/api/upload', { method: 'POST', body: form })
-      const body = await response.json()
-      if (!response.ok) throw new Error(body.error)
+      const body = await new Promise<Source>((resolve, reject) => {
+        const request = new XMLHttpRequest()
+        request.open('POST', '/api/upload')
+        request.upload.onprogress = event => { if (event.lengthComputable) setProgress({ kind: 'upload', value: Math.round(event.loaded / event.total * 100), fileName: file.name }) }
+        request.onerror = () => reject(new Error('Upload failed.'))
+        request.onload = () => {
+          try {
+            const response = JSON.parse(request.responseText) as Source & { error?: string }
+            if (request.status < 200 || request.status >= 300) return reject(new Error(response.error ?? 'Upload failed.'))
+            resolve(response)
+          } catch {
+            reject(new Error(request.status === 413 ? 'Upload rejected by the network proxy before it reached the server. Use the app locally for this file.' : 'Upload failed.'))
+          }
+        }
+        request.send(form)
+      })
       setSource(body)
     } catch (e) { setError(e instanceof Error ? e.message : 'Upload failed.') }
-    finally { setBusy(false) }
+    finally { setProgress(null) }
   }
 
   const choices = [
@@ -56,14 +71,27 @@ function App() {
 
   async function transcode() {
     if (!source || choices.length === 0) return
-    setBusy(true); setError('')
+    setError(''); setProgress({ kind: 'transcode', value: 0 })
     try {
       const response = await fetch('/api/transcode', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sessionId: source.sessionId, variants: choices }) })
-      const body = await response.json()
-      if (!response.ok) throw new Error(body.error)
-      setVariants(body.variants)
+      let job: { statusUrl?: string; error?: string }
+      try { job = await response.json() } catch { job = {} }
+      if (!response.ok || !job.statusUrl) throw new Error(job.error ?? 'Could not start conversion.')
+      for (;;) {
+        const statusResponse = await fetch(job.statusUrl)
+        let status: TranscodeJob
+        try { status = await statusResponse.json() } catch { throw new Error('Could not check conversion progress.') }
+        if (!statusResponse.ok) throw new Error(status.error ?? 'Could not check conversion progress.')
+        setProgress({ kind: 'transcode', value: status.progress })
+        if (status.status === 'complete') {
+          setVariants(status.variants ?? [])
+          break
+        }
+        if (status.status === 'failed') throw new Error(status.error ?? 'Conversion failed.')
+        await new Promise(resolve => setTimeout(resolve, 500))
+      }
     } catch (e) { setError(e instanceof Error ? e.message : 'Conversion failed.') }
-    finally { setBusy(false) }
+    finally { setProgress(null) }
   }
 
   return <div className="min-h-screen bg-[#f7faf7]">
@@ -77,7 +105,7 @@ function App() {
       <div className="mb-9 max-w-2xl"><p className="mb-2 text-sm font-semibold uppercase tracking-widest text-green-700">Lossy audio, honestly tested</p><h1 className="text-3xl font-bold tracking-tight text-green-950 sm:text-4xl">Can you hear the difference?</h1><p className="mt-3 text-base leading-7 text-slate-600">Upload a lossless master, create compressed versions, then run a blind ABX test in your browser.</p></div>
       <section className="rounded-xl border border-green-200 bg-white p-5 shadow-sm sm:p-7">
         <Step number="1" title="Upload a lossless source" />
-        <DropZone source={source} busy={busy} onFile={uploadFile} />
+        <DropZone source={source} busy={progress?.kind === 'upload'} progress={progress?.kind === 'upload' ? progress : null} onFile={uploadFile} />
         <div className="my-7 border-t border-slate-200" />
         <Step number="2" title="Choose quality versions" />
         <p className="-mt-2 mb-4 text-sm text-slate-600">Select one or more listening-quality presets to compare.</p>
@@ -106,9 +134,10 @@ function App() {
           </div>)}</div>
           <button disabled={customChoices.length >= 5 || choices.length >= 8} onClick={() => setCustomChoices(current => [...current, { codec: 'aac', bitrate: 192 }])} className="mt-3 flex items-center gap-1.5 text-sm font-semibold text-green-700 hover:text-green-900 disabled:opacity-40"><Plus className="size-4" /> Add custom version</button>
         </div>}
+        {progress?.kind === 'transcode' && <ProgressBar label="Transcoding progress" message="Creating listening set" value={progress.value} />}
         {error && <p role="alert" className="mt-4 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">{error}</p>}
-        <button onClick={transcode} disabled={!source || busy || choices.length === 0} className="mt-6 flex w-full items-center justify-center gap-2 rounded-lg bg-green-700 px-5 py-3 font-semibold text-white hover:bg-green-800 disabled:cursor-not-allowed disabled:bg-slate-300">
-          {busy ? <LoaderCircle className="size-5 animate-spin" /> : <Headphones className="size-5" />} Create listening set
+        <button onClick={transcode} disabled={!source || progress !== null || choices.length === 0} className="mt-6 flex w-full items-center justify-center gap-2 rounded-lg bg-green-700 px-5 py-3 font-semibold text-white hover:bg-green-800 disabled:cursor-not-allowed disabled:bg-slate-300">
+          {progress?.kind === 'transcode' ? <LoaderCircle className="size-5 animate-spin" /> : <Headphones className="size-5" />} Create listening set
         </button>
       </section>
       {source && variants.length > 0 && <ListeningSet source={source} variants={variants} onStart={(a, b) => setTestPair([a, b])} />}
@@ -120,14 +149,19 @@ function App() {
 
 function Step({ number, title }: { number: string; title: string }) { return <h2 className="mb-4 flex items-center gap-3 text-lg font-bold text-slate-900"><span className="grid size-7 place-items-center rounded-full bg-green-100 text-sm text-green-800">{number}</span>{title}</h2> }
 
-function DropZone({ source, busy, onFile }: { source: Source | null; busy: boolean; onFile: (file?: File) => void }) {
+function ProgressBar({ label, message, value }: { label: string; message: string; value: number }) {
+  const percent = Math.min(100, Math.max(0, Math.round(value)))
+  return <div className="mt-4" aria-live="polite"><div className="mb-2 flex justify-between text-sm"><span className="font-semibold text-green-950">{message} · {percent}%</span><span className="text-slate-600">{percent}%</span></div><div role="progressbar" aria-label={label} aria-valuemin={0} aria-valuemax={100} aria-valuenow={percent} className="h-2 overflow-hidden rounded-full bg-green-100"><div className="h-full rounded-full bg-green-700 transition-[width] duration-200" style={{ width: `${percent}%` }} /></div></div>
+}
+
+function DropZone({ source, busy, progress, onFile }: { source: Source | null; busy: boolean; progress: Progress | null; onFile: (file?: File) => void }) {
   const input = useRef<HTMLInputElement>(null)
   const drop = (e: DragEvent) => { e.preventDefault(); onFile(e.dataTransfer.files[0]) }
   const change = (e: ChangeEvent<HTMLInputElement>) => onFile(e.target.files?.[0])
   if (source) return <div className="flex items-center gap-3 rounded-lg border border-green-200 bg-green-50 p-4"><span className="grid size-10 place-items-center rounded-full bg-green-200 text-green-800"><Check className="size-5" /></span><div className="min-w-0"><p className="truncate font-semibold text-green-950">{source.name}</p><p className="text-sm text-green-700">Ready to encode</p></div><button onClick={() => input.current?.click()} className="ml-auto text-sm font-semibold text-green-800">Replace</button><input ref={input} hidden type="file" accept=".wav,.flac,.aif,.aiff,.alac,.m4a,audio/wav,audio/flac" onChange={change} /></div>
-  return <button type="button" disabled={busy} onClick={() => input.current?.click()} onDragOver={e => e.preventDefault()} onDrop={drop} className="w-full rounded-xl border-2 border-dashed border-green-300 bg-green-50/60 px-5 py-10 text-center hover:border-green-500 hover:bg-green-50 disabled:opacity-60">
+  return <div><button type="button" disabled={busy} onClick={() => input.current?.click()} onDragOver={e => e.preventDefault()} onDrop={drop} className="w-full rounded-xl border-2 border-dashed border-green-300 bg-green-50/60 px-5 py-10 text-center hover:border-green-500 hover:bg-green-50 disabled:opacity-60">
     <Upload className="mx-auto mb-3 size-8 text-green-700" /><span className="block font-semibold text-green-950">Drop a FLAC, WAV, AIFF, or ALAC file here</span><span className="mt-1 block text-sm text-slate-500">or click to browse · up to 500 MB</span><input ref={input} hidden type="file" accept=".wav,.flac,.aif,.aiff,.alac,.m4a,audio/wav,audio/flac" onChange={change} />
-  </button>
+  </button>{progress && <ProgressBar label="Upload progress" message={`Uploading source${progress.fileName ? ` · ${progress.fileName}` : ''}`} value={progress.value} />}</div>
 }
 
 type ListenTrack = { id: string; label: string; url: string; codec?: string }

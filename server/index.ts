@@ -53,16 +53,45 @@ const transcodeSchema = z.object({
 
 type Variant = { id: string; codec: string; bitrate: number; url: string; label: string }
 type Session = { id: string; dir: string; originalName: string; originalPath: string; createdAt: number; variants: Variant[] }
+type TranscodeJob = { sessionId: string; progress: number; status: 'processing' | 'complete' | 'failed'; variants?: Variant[]; error?: string }
 const sessions = new Map<string, Session>()
+const transcodeJobs = new Map<string, TranscodeJob>()
 
-function runFfmpeg(args: string[]) {
+function runFfmpeg(args: string[], onProgress?: (outTimeSeconds: number) => void) {
   return new Promise<void>((resolve, reject) => {
     if (!ffmpegPath) return reject(new Error('FFmpeg is unavailable on this platform'))
-    const child = spawn(ffmpegPath, ['-hide_banner', '-loglevel', 'error', ...args])
+    const child = spawn(ffmpegPath, ['-hide_banner', '-nostats', '-loglevel', 'error', ...(onProgress ? ['-progress', 'pipe:2'] : []), ...args])
+    let stderr = ''
+    let pending = ''
+    child.stderr.on('data', (data: Buffer) => {
+      const output = data.toString()
+      stderr += output
+      if (!onProgress) return
+      pending += output
+      const lines = pending.split(/\r?\n/)
+      pending = lines.pop() ?? ''
+      for (const line of lines) {
+        const match = /^out_time_us=(\d+)$/.exec(line)
+        if (match) onProgress(Number(match[1]) / 1_000_000)
+      }
+    })
+    child.on('error', reject)
+    child.on('close', (code: number | null) => code === 0 ? resolve() : reject(new Error(stderr || `FFmpeg exited with ${code}`)))
+  })
+}
+
+function mediaDuration(file: string) {
+  return new Promise<number>((resolve, reject) => {
+    if (!ffmpegPath) return reject(new Error('FFmpeg is unavailable on this platform'))
+    const child = spawn(ffmpegPath, ['-hide_banner', '-i', file])
     let stderr = ''
     child.stderr.on('data', (data: Buffer) => { stderr += data.toString() })
     child.on('error', reject)
-    child.on('close', (code: number | null) => code === 0 ? resolve() : reject(new Error(stderr || `FFmpeg exited with ${code}`)))
+    child.on('close', () => {
+      const match = /Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)/.exec(stderr)
+      if (!match) return reject(new Error('Could not determine the source duration.'))
+      resolve(Number(match[1]) * 3600 + Number(match[2]) * 60 + Number(match[3]))
+    })
   })
 }
 
@@ -70,6 +99,7 @@ async function removeSession(id: string) {
   const session = sessions.get(id)
   if (!session) return
   sessions.delete(id)
+  for (const [jobId, job] of transcodeJobs) if (job.sessionId === id) transcodeJobs.delete(jobId)
   await fsp.rm(session.dir, { recursive: true, force: true })
 }
 
@@ -105,25 +135,48 @@ app.post('/api/transcode', async (req, res, next) => {
     const input = transcodeSchema.parse(req.body)
     const session = sessions.get(input.sessionId)
     if (!session) return res.status(404).json({ error: 'Session expired. Upload the source again.' })
-    const variants: Variant[] = []
-    for (const requested of input.variants) {
-      const id = crypto.randomUUID()
-      const extension = requested.codec === 'aac' ? 'm4a' : requested.codec
-      const output = path.join(session.dir, `${id}.${extension}`)
-      const codecArgs = requested.codec === 'mp3'
-        ? ['-c:a', 'libmp3lame', '-b:a', `${requested.bitrate}k`]
-        : requested.codec === 'aac'
-          ? ['-c:a', 'aac', '-b:a', `${requested.bitrate}k`, '-movflags', '+faststart']
-          : requested.codec === 'ogg'
-            ? ['-ac', '2', '-c:a', 'libvorbis', '-b:a', `${requested.bitrate}k`]
-            : ['-c:a', 'libopus', '-b:a', `${requested.bitrate}k`, '-vbr', 'on']
-      await runFfmpeg(['-i', session.originalPath, '-vn', ...codecArgs, output])
-      variants.push({ id, codec: requested.codec, bitrate: requested.bitrate, label: requested.label ?? `${requested.codec.toUpperCase()} · ${requested.bitrate} kbps`, url: `/media/${session.id}/${path.basename(output)}` })
-    }
-    session.variants.push(...variants)
-    res.json({ variants })
+    const jobId = crypto.randomUUID()
+    const job: TranscodeJob = { sessionId: session.id, progress: 0, status: 'processing' }
+    transcodeJobs.set(jobId, job)
+    void transcode(session, input.variants, job).catch(error => {
+      job.status = 'failed'
+      job.error = error instanceof Error ? error.message : 'Conversion failed.'
+    })
+    res.status(202).json({ jobId, statusUrl: `/api/transcode/${jobId}` })
   } catch (error) { next(error) }
 })
+
+app.get('/api/transcode/:jobId', (req, res) => {
+  const job = transcodeJobs.get(req.params.jobId)
+  if (!job) return res.status(404).json({ error: 'Conversion job not found.' })
+  res.json(job)
+})
+
+async function transcode(session: Session, requests: z.infer<typeof transcodeSchema>['variants'], job: TranscodeJob) {
+  const duration = await mediaDuration(session.originalPath)
+  const variants: Variant[] = []
+  for (const [index, requested] of requests.entries()) {
+    const id = crypto.randomUUID()
+    const extension = requested.codec === 'aac' ? 'm4a' : requested.codec
+    const output = path.join(session.dir, `${id}.${extension}`)
+    const codecArgs = requested.codec === 'mp3'
+      ? ['-c:a', 'libmp3lame', '-b:a', `${requested.bitrate}k`]
+      : requested.codec === 'aac'
+        ? ['-c:a', 'aac', '-b:a', `${requested.bitrate}k`, '-movflags', '+faststart']
+        : requested.codec === 'ogg'
+          ? ['-ac', '2', '-c:a', 'libvorbis', '-b:a', `${requested.bitrate}k`]
+          : ['-c:a', 'libopus', '-b:a', `${requested.bitrate}k`, '-vbr', 'on']
+    await runFfmpeg(['-i', session.originalPath, '-vn', ...codecArgs, output], outTime => {
+      const completed = (index + Math.min(outTime / duration, 1)) / requests.length
+      job.progress = Math.min(99, Math.max(job.progress, Math.floor(completed * 100)))
+    })
+    variants.push({ id, codec: requested.codec, bitrate: requested.bitrate, label: requested.label ?? `${requested.codec.toUpperCase()} · ${requested.bitrate} kbps`, url: `/media/${session.id}/${path.basename(output)}` })
+  }
+  session.variants.push(...variants)
+  job.variants = variants
+  job.progress = 100
+  job.status = 'complete'
+}
 
 app.get('/media/:session/:file', (req, res) => {
   const session = sessions.get(req.params.session)
