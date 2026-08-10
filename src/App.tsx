@@ -1,5 +1,6 @@
 import { ChangeEvent, DragEvent, SVGProps, useEffect, useMemo, useRef, useState } from 'react'
-import { Check, Headphones, Leaf, LoaderCircle, Pause, Play, Plus, Settings, ShieldCheck, Trash2, Upload } from 'lucide-react'
+import { Check, Github, Headphones, Leaf, LoaderCircle, Pause, Play, Plus, Settings, ShieldCheck, Trash2, Upload } from 'lucide-react'
+import packageJson from '../package.json'
 
 type Variant = { id: string; codec: string; bitrate: number; label: string; url: string }
 type Source = { sessionId: string; name: string; referenceUrl: string }
@@ -7,6 +8,9 @@ type Choice = { codec: 'mp3' | 'aac' | 'opus' | 'ogg'; bitrate: number; label?: 
 type PresetId = 'youtube' | 'youtubeMusic' | 'spotify'
 type Progress = { kind: 'upload' | 'transcode'; value: number; fileName?: string }
 type TranscodeJob = { progress: number; status: 'processing' | 'complete' | 'failed'; variants?: Variant[]; error?: string }
+
+const version = `v${packageJson.version}`
+const githubUrl = 'https://github.com/sortedcord/greenear'
 
 const codecs: Choice['codec'][] = ['mp3', 'aac', 'opus', 'ogg']
 const bitrates = [64, 96, 128, 160, 192, 256, 320]
@@ -98,11 +102,15 @@ function App() {
     <header className="border-b border-green-200 bg-white">
       <div className="mx-auto flex max-w-5xl items-center justify-between px-5 py-4">
         <div className="flex items-center gap-2 text-green-900"><Leaf className="size-7" aria-hidden /><span className="text-lg font-bold">Green Ear</span></div>
-        <span className="hidden items-center gap-1.5 text-sm text-green-800 sm:flex"><ShieldCheck className="size-4" /> Files deleted after 1 hour</span>
+        <div className="flex items-center gap-4 text-sm text-green-800">
+          <span className="hidden items-center gap-1.5 sm:flex"><ShieldCheck className="size-4" /> Files deleted after 1 hour</span>
+          <a href={githubUrl} target="_blank" rel="noreferrer" className="flex items-center gap-1.5 font-semibold hover:text-green-950" aria-label="Green Ear on GitHub"><Github className="size-4" /> GitHub</a>
+          <span className="text-slate-500" aria-label={`Version ${version}`}>{version}</span>
+        </div>
       </div>
     </header>
     <main className="mx-auto max-w-5xl px-5 py-10">
-      <div className="mb-9 max-w-2xl"><p className="mb-2 text-sm font-semibold uppercase tracking-widest text-green-700">Lossy audio, honestly tested</p><h1 className="text-3xl font-bold tracking-tight text-green-950 sm:text-4xl">Can you hear the difference?</h1><p className="mt-3 text-base leading-7 text-slate-600">Upload a lossless master, create compressed versions, then run a blind ABX test in your browser.</p></div>
+      <div className="mb-9 max-w-2xl"><p className="mb-2 text-sm font-semibold uppercase tracking-widest text-green-700">Lossy audio, honestly tested</p><h1 className="text-3xl font-bold tracking-tight text-green-950 sm:text-4xl">Do you even FLAC bro?</h1><p className="mt-3 text-base leading-7 text-slate-600">Upload a lossless master, create compressed versions, then run a blind ABX test in your browser.</p></div>
       <section className="rounded-xl border border-green-200 bg-white p-5 shadow-sm sm:p-7">
         <Step number="1" title="Upload a lossless source" />
         <DropZone source={source} busy={progress?.kind === 'upload'} progress={progress?.kind === 'upload' ? progress : null} onFile={uploadFile} />
@@ -143,7 +151,7 @@ function App() {
       {source && variants.length > 0 && <ListeningSet source={source} variants={variants} onStart={(a, b) => setTestPair([a, b])} />}
       {testPair && <AbxTest sources={[{ id: 'reference', label: 'Lossless reference', url: source!.referenceUrl }, ...variants].filter(v => testPair.includes(v.id))} onClose={() => setTestPair(null)} />}
     </main>
-    <footer className="mx-auto max-w-5xl px-5 py-8 text-sm text-slate-500">Green Ear · Listen carefully, trust your results.</footer>
+    <footer className="mx-auto flex max-w-5xl items-center justify-between px-5 py-8 text-sm text-slate-500"><span>Green Ear · Listen carefully, trust your results.</span><span>{version}</span></footer>
   </div>
 }
 

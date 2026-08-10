@@ -1,8 +1,8 @@
 services:
-  audio-ab:
+  greenear:
     build:
       context: .
-    image: audio-ab:latest
+    image: greenear:v0.0.5
     restart: unless-stopped
     ports:
       - "3001:3001"
@@ -12,11 +12,11 @@ services:
       MAX_UPLOAD_MB: "500"
       SESSION_TTL_HOURS: "1"
     volumes:
-      - audio-ab-data:/app/data
+      - greenear-data:/app/data
     security_opt:
       - no-new-privileges:true
     cap_drop:
       - ALL
 
 volumes:
-  audio-ab-data:
+  greenear-data:
